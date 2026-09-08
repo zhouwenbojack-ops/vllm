@@ -32,7 +32,7 @@ logger = init_logger(__name__)
 
 
 class BlockHashToBlockMap:
-    """
+    """对于两块block A 和 B, 如果B在分配之前发现A可以复用, 那就直接复用, 指向一块物理block, 如果A和B各自已经分配了不同的物理block, 就算内容一样, 也不会合并\n
     Cache of blocks that are used for prefix caching. It caches blocks
     from hash directly to a block or multiple blocks
     (i.e. {block_hash: KVCacheBlocks})
@@ -60,7 +60,7 @@ class BlockHashToBlockMap:
         ] = {}
 
     def get_one_block(self, key: BlockHashWithGroupId) -> KVCacheBlock | None:
-        """
+        """因为两块block内容一样, 只是物理地址不同, 返回任意一个匹配的block即可, 默认拿第一个\n
         Gets any block with the given block hash key.
         """
         blocks = self._cache.get(key)
@@ -68,7 +68,7 @@ class BlockHashToBlockMap:
             if isinstance(blocks, KVCacheBlock):
                 return blocks
             if isinstance(blocks, dict):
-                return next(iter(blocks.values()))
+                return next(iter(blocks.values())) # 取第一个block
             self._unexpected_blocks_type(blocks)
         return None
 
@@ -142,7 +142,8 @@ class BlockHashToBlockMap:
 
 
 class BlockPool:
-    """BlockPool that manages KVCacheBlocks.
+    """维护所有的kv blocks, 和free-list, 以及 hash -> block 的prefix cache索引\n
+    BlockPool that manages KVCacheBlocks.
     It provides methods to allocate, free and cache the kv cache blocks. The
     free_block_queue stores the free blocks in eviction order to enable
     allocation, free, and cache eviction. The cached_block_hash_to_block
@@ -183,12 +184,12 @@ class BlockPool:
 
         # Cache for block lookup
         self.cached_block_hash_to_block: BlockHashToBlockMap = BlockHashToBlockMap()
-        self.cached_block_hashes_by_block: dict[int, set[BlockHashWithGroupId]] = {}
+        self.cached_block_hashes_by_block: dict[int, set[BlockHashWithGroupId]] = {} # 记录 一个 block 除主 hash 外，还有哪些附属 hash
 
         # To represent a placeholder block with block_id=0.
         # The ref_cnt of null_block is not maintained, needs special care to
         # avoid freeing it.
-        self.null_block = self.free_block_queue.popleft()
+        self.null_block = self.free_block_queue.popleft() # 占位kv block, 不参与正常释放, 系统真实可用block数为 n - 1
         self.null_block.is_null = True
 
         self.enable_kv_cache_events = enable_kv_cache_events
@@ -212,7 +213,7 @@ class BlockPool:
         """
         cached_blocks = []
         for group_id in kv_cache_group_ids:
-            block_hash_with_group_id = make_block_hash_with_group_id(
+            block_hash_with_group_id = make_block_hash_with_group_id( # 不同kv cache group可能block size不同, 不能混用
                 block_hash, group_id
             )
             block = self.cached_block_hash_to_block.get_one_block(
@@ -233,7 +234,8 @@ class BlockPool:
         kv_cache_group_id: int,
         block_mask: list[bool] | None = None,
     ) -> None:
-        """Cache a list of full blocks for prefix caching.
+        """把已经“填满”的 block 注册到缓存索引里\n
+        Cache a list of full blocks for prefix caching.
         This function takes a list of blocks that will have their block hash
         metadata to be updated and cached. Given a request, it updates the
         metadata for each block and caching it in the
@@ -257,16 +259,25 @@ class BlockPool:
                 that can never serve a hit stay out of the prefix-cache hash
                 map.
         """
-        if num_cached_blocks >= num_full_blocks:
+        if num_cached_blocks >= num_full_blocks: # num_cached_blocks: 当前已经缓存过的block, num_full_blocks: 当前有多少block是满的
             return
-        new_full_blocks = blocks[num_cached_blocks:num_full_blocks]
+        new_full_blocks = blocks[num_cached_blocks:num_full_blocks] # 这次新增需要注册缓存的blocks
         assert block_mask is None or len(block_mask) == len(new_full_blocks)
         if block_size == self.hash_block_size:
             # Common case.
-            block_hashes: BlockHashList = request.block_hashes
+            block_hashes: BlockHashList = request.block_hashes # 请求级别预先算好的“前缀链式 hash 列表”
         else:
-            # block_size is a multiple of hash_block_size. This happens when
-            # different KV cache groups have different block sizes.
+            """
+            token序列每 hash_block_size 个tokens算一个前缀哈希
+            假设 hash_block_size = 16:
+            - 前 16 个 token -> H0
+            - 前 32 个 token -> H1
+            - 前 48 个 token -> H2
+            则: request.block_hashes = [H0, H1, H2, ...]
+
+            如果当前 KV group 的 block_size 恰好也是 16，那么直接用就行;
+            如果当前 group 的 block 更大，比如 block_size = 64 ，那一个物理 block 对应 4 个 hash_block, 这时 BlockHashListWithBlockSize(...) 会把底层的小粒度 hash 适配成“大 block 视角”的 hash 列表
+            """
             assert block_size % self.hash_block_size == 0
             block_hashes = BlockHashListWithBlockSize(
                 request.block_hashes, self.hash_block_size, block_size
@@ -274,23 +285,23 @@ class BlockPool:
         assert len(block_hashes) >= num_full_blocks
 
         new_block_hashes = block_hashes[num_cached_blocks:]
-        new_hashes: list[ExternalBlockHash] | None = (
+        new_hashes: list[ExternalBlockHash] | None = ( # 如果开启了事件上报，就把新注册的 hash 记录下来，后面生成 BlockStored 事件
             [] if self.enable_kv_cache_events else None
         )
         for i, blk in enumerate(new_full_blocks):
             # Some blocks may be null or masked out when enabling sparse attention
             # like sliding window attention, or Mamba models with prefix-caching
             # in align mode. We skip null blocks here.
-            if blk.is_null or (block_mask is not None and not block_mask[i]):
+            if blk.is_null or (block_mask is not None and not block_mask[i]): # block_mask[i] 为True时, block进入cache, 为 False时 block 不注册到cache
                 continue
             block_hash = new_block_hashes[i]
-            num_hash_tokens = (num_cached_blocks + i + 1) * block_size
+            num_hash_tokens = (num_cached_blocks + i + 1) * block_size # 这个 hash 覆盖到多少 token
 
             # Update and added the full block to the cache.
             block_hash_with_group_id = make_block_hash_with_group_id(
                 block_hash, kv_cache_group_id
             )
-            if blk.block_hash is not None:
+            if blk.block_hash is not None: # 同一个物理 block 之前可能只注册了 partial hash(cache_partial_block())，现在它变成 full block 了，要升级成 full hash
                 # The only valid case where a "new full block" already has a
                 # hash is partial->full promotion of the same cache block.
                 assert (
@@ -309,7 +320,7 @@ class BlockPool:
 
         if self.enable_kv_cache_events:
             if num_cached_blocks == 0:
-                parent_block_hash: ExternalBlockHash | None = None
+                parent_block_hash: ExternalBlockHash | None = None # parent_block_hash: 这批新block是接在哪个前缀后面的
             else:
                 parent_block_hash = maybe_convert_block_hash(
                     block_hashes[num_cached_blocks - 1]
@@ -481,21 +492,21 @@ class BlockPool:
         block_start = (num_hash_blocks - 1) * self.hash_block_size
         return parent_hash, block_start
 
-    def _remove_cached_block_hashes(
+    def _remove_cached_block_hashes( # 一个block可以对应多个hash idx, 需要一起清空
         self,
         block: KVCacheBlock,
     ) -> list[BlockHashWithGroupId]:
         block_hashes: list[BlockHashWithGroupId] = []
-        if block.block_hash is not None:
+        if block.block_hash is not None: # block是full的情况, 这个值才会被设置
             block_hashes.append(block.block_hash)
-        block_hashes.extend(self.cached_block_hashes_by_block.pop(block.block_id, ()))
+        block_hashes.extend(self.cached_block_hashes_by_block.pop(block.block_id, ())) # 查这个block对应的partial hash
         if not block_hashes:
             return []
 
         removed_hashes: list[BlockHashWithGroupId] = []
         for block_hash in block_hashes:
             if (
-                self.cached_block_hash_to_block.pop(block_hash, block.block_id)
+                self.cached_block_hash_to_block.pop(block_hash, block.block_id) # 从这个hash对应的block集合中, 删除当前block, 一个hash可能对应多个block
                 is not None
             ):
                 removed_hashes.append(block_hash)
@@ -534,12 +545,14 @@ class BlockPool:
         if block.block_hash is None:
             block.set_block_hash(block_hash_with_group_id, num_tokens=num_tokens)
         else:
+            # 如果 block 已经有主 hash，但这次又来了一个不同的 key, 就放到 cached_block_hashes_by_block, 作为alias.
+            # 这两个key指向同一个block的不同offset.
             self.cached_block_hashes_by_block.setdefault(block.block_id, set()).add(
                 block_hash_with_group_id
             )
         self.cached_block_hash_to_block.insert(block_hash_with_group_id, block)
 
-    def get_new_blocks(self, num_blocks: int) -> list[KVCacheBlock]:
+    def get_new_blocks(self, num_blocks: int) -> list[KVCacheBlock]: # 从freelist头部拿空闲块
         """Get new blocks from the free block pool.
 
         Note that we do not check block cache in this function.
@@ -558,7 +571,7 @@ class BlockPool:
         # In order to only iterate the list once, we duplicated code a bit
         if self.enable_caching:
             for block in ret:
-                self._maybe_evict_cached_block(block)
+                self._maybe_evict_cached_block(block) # 如果开启cache, 复用旧block时需要先reset hash, 防止误命中旧kv
                 assert block.ref_cnt == 0
                 block.ref_cnt += 1
                 if self.metrics_collector:
@@ -631,8 +644,8 @@ class BlockPool:
                     blocks_with_hash.append(block)
 
         # Blocks without hash always get evicted first - prepend them last to the tail
-        self.free_block_queue.prepend_n(blocks_without_hash)
-        self.free_block_queue.append_n(blocks_with_hash)
+        self.free_block_queue.prepend_n(blocks_without_hash) # 没有hash的block永远不可能hit, 放到free_list前优先reset复用/淘汰
+        self.free_block_queue.append_n(blocks_with_hash) # 有hash的block放后面, 更可能保留成prefix cache
 
     def evict_blocks(self, block_ids: set[int]) -> None:
         """evict blocks from the prefix cache by their block IDs.
