@@ -18,7 +18,8 @@ class SchedulingPolicy(Enum):
 
 
 class RequestQueue(ABC):
-    """Abstract base class for request queues."""
+    """FCFS 或 优先级\n
+    Abstract base class for request queues."""
 
     @abstractmethod
     def add_request(self, request: Request) -> None:
@@ -129,7 +130,7 @@ class FCFSRequestQueue(deque[Request], RequestQueue):
 
 
 class PriorityRequestQueue(RequestQueue):
-    """
+    """优先级 > 到达时间 > req_id\n
     A priority queue that supports heap operations.
 
     Respects the ordering defined in the Request class, where

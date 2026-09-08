@@ -138,7 +138,7 @@ class Request:
         )
 
         # Used in async scheduling.
-        self.num_output_placeholders = 0
+        self.num_output_placeholders = 0 # 异步调度下, 用来占位的token数, 即当作算好, 但是token id还没从模型返回的token
         self.async_tokens_to_discard = 0
 
         # V2+PP+async: Enforces `pp_size` cadence between same-request decode steps
@@ -149,7 +149,7 @@ class Request:
         # deferred block freeing (see Scheduler._free_request_blocks).
         self.last_sched_seq = 0
 
-        self.spec_token_ids: list[int] = []
+        self.spec_token_ids: list[int] = [] # draft model生产的tokens, 前一个step通过update_draft_token_ids填入
         self.num_computed_tokens = 0
         self.cache_salt: str | None = cache_salt
 
@@ -245,6 +245,7 @@ class Request:
 
     @property
     def num_tokens(self) -> int:
+        """prompt + 已经被接受的token, 不包含draft tokens"""
         return len(self._all_token_ids)
 
     @property
@@ -323,18 +324,18 @@ class Request:
 class RequestStatus(enum.IntEnum):
     """Status of a request."""
 
-    WAITING = enum.auto()
-    WAITING_FOR_STRUCTURED_OUTPUT_GRAMMAR = enum.auto()
-    WAITING_FOR_REMOTE_KVS = enum.auto()
-    WAITING_FOR_STREAMING_REQ = enum.auto()
+    WAITING = enum.auto() # 初始态, 放在 waitting 等待sched
+    WAITING_FOR_STRUCTURED_OUTPUT_GRAMMAR = enum.auto() # 结构化输出等待grammar编译完成
+    WAITING_FOR_REMOTE_KVS = enum.auto() # 等待remote kv cache传输完成
+    WAITING_FOR_STREAMING_REQ = enum.auto() # 流式请求, 等待新的输入分片
     RUNNING = enum.auto()
-    PREEMPTED = enum.auto()
+    PREEMPTED = enum.auto() # 因显存不足被抢占, 释放blocks, 重置 num_computed_tokens=0, num_preemptions += 1 ,然后 prepend_request 塞回 self.waiting 队首
     # Note: anything after PREEMPTED will be considered
     # as a finished status.
     FINISHED_STOPPED = enum.auto()
     FINISHED_LENGTH_CAPPED = enum.auto()
     FINISHED_ABORTED = enum.auto()
-    FINISHED_IGNORED = enum.auto()
+    FINISHED_IGNORED = enum.auto() # prompt 超长被忽略
     FINISHED_ERROR = enum.auto()
     FINISHED_REPETITION = enum.auto()
 
