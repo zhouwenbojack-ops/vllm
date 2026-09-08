@@ -38,6 +38,7 @@ build/
 !requirements/build/
 cmake-build-*/
 CMakeUserPresets.json
+compile_commands.json
 develop-eggs/
 dist/
 downloads/
@@ -155,6 +156,8 @@ celerybeat.pid
 # Environments
 .env
 .venv
+.venv-linux/
+pyrightconfig.json
 env/
 venv/
 ENV/

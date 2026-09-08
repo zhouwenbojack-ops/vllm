@@ -1,0 +1,86 @@
+# Only configure interactive shells. docker exec commands must remain clean.
+case $- in
+  *i*) ;;
+  *) return ;;
+esac
+
+export EDITOR=vim
+export VISUAL=vim
+export PAGER=less
+export LESS='-FRX'
+
+HISTCONTROL=ignoreboth:erasedups
+HISTSIZE=50000
+HISTFILESIZE=100000
+shopt -s histappend checkwinsize globstar
+
+if [[ -r /usr/share/bash-completion/bash_completion ]]; then
+  source /usr/share/bash-completion/bash_completion
+fi
+
+if [[ -r /usr/share/doc/fzf/examples/key-bindings.bash ]]; then
+  source /usr/share/doc/fzf/examples/key-bindings.bash
+fi
+if [[ -r /usr/share/doc/fzf/examples/completion.bash ]]; then
+  source /usr/share/doc/fzf/examples/completion.bash
+fi
+
+if command -v fdfind >/dev/null 2>&1; then
+  export FZF_DEFAULT_COMMAND='fdfind --type f --hidden --follow --exclude .git'
+  export FZF_CTRL_T_COMMAND="${FZF_DEFAULT_COMMAND}"
+fi
+export FZF_DEFAULT_OPTS='--height=45% --layout=reverse --border --info=inline'
+
+if command -v zoxide >/dev/null 2>&1; then
+  eval "$(zoxide init bash)"
+fi
+
+for git_prompt in \
+  /usr/lib/git-core/git-sh-prompt \
+  /usr/share/git/completion/git-prompt.sh; do
+  if [[ -r "${git_prompt}" ]]; then
+    source "${git_prompt}"
+    break
+  fi
+done
+unset git_prompt
+
+GIT_PS1_SHOWDIRTYSTATE=1
+GIT_PS1_SHOWSTASHSTATE=1
+GIT_PS1_SHOWUNTRACKEDFILES=1
+GIT_PS1_SHOWUPSTREAM=auto
+
+__dev_prompt_command() {
+  local last_status=$?
+  local status_color='\[\e[32m\]'
+  local status_text='ok'
+  local git_info=''
+
+  history -a
+  history -n
+
+  if ((last_status != 0)); then
+    status_color='\[\e[31m\]'
+    status_text="error ${last_status}"
+  fi
+  if declare -F __git_ps1 >/dev/null 2>&1; then
+    git_info="$(__git_ps1 ' (%s)')"
+  fi
+
+  PS1="${status_color}${status_text} \[\e[36m\]\u@\h \[\e[34m\]\w\[\e[35m\]${git_info}\[\e[0m\]\n> "
+}
+PROMPT_COMMAND=__dev_prompt_command
+
+alias ls='ls --color=auto --group-directories-first'
+alias ll='ls -alFh'
+alias la='ls -A'
+alias grep='grep --color=auto'
+alias diff='diff --color=auto'
+alias bat='batcat'
+alias fd='fdfind'
+alias ..='cd ..'
+alias ...='cd ../..'
+alias g='git'
+alias gs='git status --short --branch'
+alias gl='git log --oneline --decorate --graph -20'
+alias gd='git diff'
