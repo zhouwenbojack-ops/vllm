@@ -403,8 +403,10 @@ class AsyncGPUPoolingModelRunnerOutput(AsyncModelRunnerOutput):
 
 
 class ExecuteModelState(NamedTuple):
-    """Ephemeral cached state transferred between execute_model() and
-    sample_tokens(), after execute_model() returns None."""
+    """一次forward拆成两阶段, 中间通过ExecuteModelState传递临时状态:
+    - execute_model(): 状态更新→输入准备→前向→算logits, 返回 None, 把中间态存进 self.execute_model_state
+    - sample_tokens(): 从 execute_model_state 取出,完成采样+draft+bookkeeping
+    """
 
     scheduler_output: "SchedulerOutput"
     logits: torch.Tensor
@@ -691,7 +693,7 @@ class GPUModelRunner(
 
         # Separate cuda stream for overlapping transfer of sampled token ids from
         # GPU to CPU when async scheduling is enabled.
-        self.async_output_copy_stream: torch.cuda.Stream | None = None
+        self.async_output_copy_stream: torch.cuda.Stream | None = None # 把d2h的结果拷贝和下一步计算overlap
         # cuda event to synchronize use of reused CPU tensors between steps
         # when async scheduling is enabled.
         self.prepare_inputs_event: torch.Event | None = None
@@ -718,7 +720,7 @@ class GPUModelRunner(
         self._encoder_timing_lock = threading.Lock()
 
         # Persistent buffers for CUDA graphs.
-        self.input_ids = self._make_buffer(self.max_num_tokens, dtype=torch.int32)
+        self.input_ids = self._make_buffer(self.max_num_tokens, dtype=torch.int32) # 预分配CUDA Graph持久缓冲区
         self.positions = torch.zeros(
             self.max_num_tokens, dtype=torch.int64, device=self.device
         )
@@ -996,7 +998,7 @@ class GPUModelRunner(
     def _make_buffer(
         self, *size: int | torch.SymInt, dtype: torch.dtype, numpy: bool = True
     ) -> CpuGpuBuffer:
-        return CpuGpuBuffer(
+        return CpuGpuBuffer( # 同时持有 CPU pinned + GPU 两份
             *size,
             dtype=dtype,
             device=self.device,
@@ -1135,7 +1137,7 @@ class GPUModelRunner(
         new/resumed/paused/finished request in the batch.
         """
         # Remove finished requests from the cached states.
-        for req_id in scheduler_output.finished_req_ids:
+        for req_id in scheduler_output.finished_req_ids: # 移除finished请求
             self.requests.pop(req_id, None)
             self.num_prompt_logprobs.pop(req_id, None)
         self.late_interaction_runner.on_requests_finished(
@@ -1178,7 +1180,7 @@ class GPUModelRunner(
         # consecutive batches contain mostly the same requests. If batches
         # have low request overlap (e.g., alternating between two distinct
         # sets of requests), this optimization becomes very inefficient.
-        for req_id in unscheduled_req_ids:
+        for req_id in unscheduled_req_ids: # 从InputBatch中移除未调度请求, 但是保留CachedStates, 以便后续恢复调度
             self.input_batch.remove_request(req_id)
 
         is_ngram_gpu = (
@@ -1192,7 +1194,7 @@ class GPUModelRunner(
         deferred_spec_decode_corrections = []
 
         # Add new requests to the cached states.
-        for new_req_data in scheduler_output.scheduled_new_reqs:
+        for new_req_data in scheduler_output.scheduled_new_reqs: # 为新请求建立 CachedRequestState
             req_id = new_req_data.req_id
             if req_id in self.requests:
                 # For streaming case only.
@@ -1281,7 +1283,7 @@ class GPUModelRunner(
         if self.use_async_spec_decode:
             self.prev_num_draft_tokens.np.fill(0)
 
-        for i, req_id in enumerate(req_data.req_ids):
+        for i, req_id in enumerate(req_data.req_ids): # 更新 running/resumed 请求的 num_computed_tokens、block table、已采样 token
             req_state = self.requests[req_id]
             num_computed_tokens = req_data.num_computed_tokens[i]
             new_block_ids = req_data.new_block_ids[i]
@@ -4044,7 +4046,8 @@ class GPUModelRunner(
         return slot_mappings_by_gid, slot_mappings_by_layer
 
     def _is_all_reqs_chunked_prefill(self) -> bool:
-        """Check if all scheduled requests are marked to discard sampled tokens.
+        """如果整批请求都是非末块prefill, 就跳过采样\n
+        Check if all scheduled requests are marked to discard sampled tokens.
 
         This is true when `discard_request_mask` is set for every scheduled
         request (e.g., for chunked prefill requests that are not the last
@@ -4084,7 +4087,7 @@ class GPUModelRunner(
                 scheduled_spec_decode_tokens=spec_decode_tokens_copy,
             )
 
-        if has_kv_transfer_group():
+        if has_kv_transfer_group(): # 先通知kv connector处理block抢占
             kv_connector_metadata = scheduler_output.kv_connector_metadata
             assert kv_connector_metadata is not None
             get_kv_transfer_group().handle_preemptions(kv_connector_metadata)
@@ -4095,7 +4098,7 @@ class GPUModelRunner(
             self.synchronize_input_prep(),
         ):
             # Update persistent batch states.
-            deferred_state_corrections_fn = self._update_states(scheduler_output)
+            deferred_state_corrections_fn = self._update_states(scheduler_output) # 更新 InputBatch 状态
 
             if has_ec_transfer() and not get_ec_transfer().is_consumer:
                 with self.maybe_get_ec_connector_output(
@@ -4105,7 +4108,7 @@ class GPUModelRunner(
                     self._execute_mm_encoder(scheduler_output)
                     return make_empty_encoder_model_runner_output(scheduler_output)
 
-            if not num_scheduled_tokens:
+            if not num_scheduled_tokens: # 若 num_scheduled_tokens == 0 直接返回空输出
                 if (
                     self.parallel_config.distributed_executor_backend
                     == "external_launcher"
@@ -4137,7 +4140,7 @@ class GPUModelRunner(
             max_num_scheduled_tokens = int(num_scheduled_tokens_np.max())
             num_tokens_unpadded = scheduler_output.total_num_scheduled_tokens
 
-            logits_indices, spec_decode_metadata = self._prepare_inputs(
+            logits_indices, spec_decode_metadata = self._prepare_inputs( # 把 CPU 上的批次状态转成 GPU 张量
                 scheduler_output,
                 num_scheduled_tokens_np,
             )
@@ -4158,7 +4161,7 @@ class GPUModelRunner(
                 should_ubatch,
                 num_tokens_across_dp,
                 cudagraph_stats,
-            ) = self._determine_batch_execution_and_padding(
+            ) = self._determine_batch_execution_and_padding( # 决定 CUDA Graph 模式、padding 大小、是否 micro-batch(DBO)、DP 跨卡 token 分布
                 num_tokens=num_tokens_unpadded,
                 num_reqs=num_reqs,
                 num_scheduled_tokens_np=num_scheduled_tokens_np,
@@ -4395,7 +4398,7 @@ class GPUModelRunner(
                 assert broadcasted is not None
                 logits = broadcasted["logits"]
 
-        self.execute_model_state = ExecuteModelState(
+        self.execute_model_state = ExecuteModelState( # 存中间态结果
             scheduler_output,
             logits,
             spec_decode_metadata,
@@ -5233,7 +5236,7 @@ class GPUModelRunner(
                         self.model_config.model,
                     )
                     assert self.eplb_state is not None
-                    self.eplb_state.add_model(
+                    self.eplb_state.add_model( # 配置 EPLB(专家并行负载均衡)
                         self._moe_model,
                         self.model_config,
                     )
@@ -5740,7 +5743,7 @@ class GPUModelRunner(
         # has num_tokens in total.
         assert num_tokens <= self.max_num_tokens
         max_num_reqs = self.scheduler_config.max_num_seqs
-        if create_mixed_batch:
+        if create_mixed_batch: # 前半是 decode(每 req 1 token),末尾接 1 个 prefill
             assert not uniform_decode
             # Create mixed batch:
             # first half decode tokens, second half one prefill
@@ -5758,7 +5761,7 @@ class GPUModelRunner(
             num_scheduled_tokens_list = [max_query_len] * num_reqs
             if num_tokens % max_query_len != 0:
                 num_scheduled_tokens_list[-1] = num_tokens % max_query_len
-        else:
+        else: # 纯prefill
             num_reqs = min(num_tokens, max_num_reqs)
             min_tokens_per_req = num_tokens // num_reqs
             num_scheduled_tokens_list = [min_tokens_per_req] * num_reqs
@@ -6237,6 +6240,7 @@ class GPUModelRunner(
         return self._dummy_pooler_run_task(hidden_states, max_task)
 
     def profile_run(self) -> None:
+        """使用 _dummy_run 跑一个满负载的假批次探测峰值显存: max_num_tokens prefill + 多模态 encoder (用mm_budget算出最大item数)"""
         # Profile with multimodal encoder & encoder cache.
         if self.supports_mm_inputs:
             mm_config = self.model_config.multimodal_config
@@ -6594,6 +6598,7 @@ class GPUModelRunner(
 
     @instrument(span_name="Capture model")
     def capture_model(self) -> int:
+        """捕获cuda graph"""
         if self.compilation_config.cudagraph_mode == CUDAGraphMode.NONE:
             logger.warning(
                 "Skipping CUDA graph capture. To turn on CUDA graph capture, "
