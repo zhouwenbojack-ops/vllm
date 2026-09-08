@@ -438,7 +438,7 @@ class Worker(WorkerBase):
             self.model_runner.profile_run()
 
             profile_torch_peak = torch.accelerator.memory_stats(self.device).get(
-                "allocated_bytes.all.peak", 0
+                "allocated_bytes.all.peak", 0 # torch 峰值激活显存
             )
 
             # Profile CUDA graph memory if graphs will be captured.
@@ -456,7 +456,7 @@ class Worker(WorkerBase):
         profile_result.torch_peak_increase = (
             profile_torch_peak - profile_result.before_profile.torch_peak
         )
-        profile_result.non_kv_cache_memory = (
+        profile_result.non_kv_cache_memory = ( # 结合已知的 weights_memory 算出 non_kv_cache_memory
             profile_result.non_torch_increase
             + profile_result.torch_peak_increase
             + profile_result.weights_memory
@@ -470,7 +470,7 @@ class Worker(WorkerBase):
             else 0
         )
 
-        self.non_torch_memory = profile_result.non_torch_increase
+        self.non_torch_memory = profile_result.non_torch_increase # non-torch 显存增量(NCCL buffer 等)
         self.peak_activation_memory = profile_result.torch_peak_increase
         self.cudagraph_memory_estimate = cudagraph_memory_estimate
 
@@ -486,7 +486,7 @@ class Worker(WorkerBase):
             "To fix this, ensure consistent GPU memory allocation or "
             "isolate vLLM in its own container."
         )
-        self.available_kv_cache_memory_bytes = (
+        self.available_kv_cache_memory_bytes = ( # 可用 KV cache 显存 = 总显存 × gpu_memory_utilization − 权重 − 峰值激活 − non-torch
             self.requested_memory
             - profile_result.non_kv_cache_memory
             - cudagraph_memory_estimate_applied

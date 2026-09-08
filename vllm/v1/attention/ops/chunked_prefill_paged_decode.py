@@ -272,7 +272,7 @@ def chunked_prefill_paged_decode(
     key_cache,
     value_cache,
     block_table,
-    query_start_loc,
+    query_start_loc, # 每个请求query到前缀和偏移, 把prefill和decode段切开分别算, 再拼回去
     seq_lens,
     max_seq_len,
     max_query_len,
@@ -288,15 +288,15 @@ def chunked_prefill_paged_decode(
     causal: bool = True,
 ):
     if sm_scale is None:
-        sm_scale = 1.0 / (query.shape[2] ** 0.5)
+        sm_scale = 1.0 / (query.shape[2] ** 0.5) # softmax前的缩放因子
 
     use_alibi_slopes = alibi_slopes is not None
 
     if sliding_window is None or sliding_window <= 0:
         sliding_window = 0
 
-    if max_query_len > 1:
-        context_attention_fwd(
+    if max_query_len > 1: # 判断本batch有没有prefill, query_len表示本次step需要算几个新token, 纯decode的max_query_len为1
+        context_attention_fwd( # 先计算prefill段, causal 且 attend 到 kv cache
             q=query,
             k=key,
             v=value,
@@ -314,7 +314,7 @@ def chunked_prefill_paged_decode(
             alibi_slopes=alibi_slopes,
             sliding_window=sliding_window,
             sm_scale=sm_scale,
-            skip_decode=True,
+            skip_decode=True, # 跳过chunk中的decode请求(query_len==1)
             fp8_out_scale=output_scale,
             sinks=sinks,
             causal=causal,

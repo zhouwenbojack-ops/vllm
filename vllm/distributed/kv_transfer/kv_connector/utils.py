@@ -181,10 +181,10 @@ def _make_src_and_dst_indices(
     return src_indices, dst_indices
 
 
-def copy_kv_blocks(
-    src_kv_caches: dict[str, torch.Tensor],
+def copy_kv_blocks( # 在不同buffer之间搬用cache block的算子, 如CPU内存和GPU显存的swap
+    src_kv_caches: dict[str, torch.Tensor], # 按层组织的KV Cache字典, key是 layer_name
     dst_kv_caches: dict[str, torch.Tensor],
-    src_block_ids: list[int],
+    src_block_ids: list[int], # 把src_block_ids[i]的block拷贝到dst_block_ids[i]
     dst_block_ids: list[int],
     direction: Literal["h2d", "d2h"],
 ) -> None:
@@ -198,10 +198,10 @@ def copy_kv_blocks(
     ):
         return
 
-    src_device = next(iter(src_kv_caches.values())).device
+    src_device = next(iter(src_kv_caches.values())).device # 隐含假设: 同一个字典里所有层的张量都在同一设备上
     dst_device = next(iter(dst_kv_caches.values())).device
 
-    src_indices, dst_indices = _make_src_and_dst_indices(
+    src_indices, dst_indices = _make_src_and_dst_indices( # 将 list[int] 转成各自 device 上的int64 tensor
         src_block_ids=src_block_ids,
         dst_block_ids=dst_block_ids,
         src_device=src_device,
@@ -209,10 +209,10 @@ def copy_kv_blocks(
     )
 
     if direction == "h2d":
-        copy_fn = current_platform.insert_blocks_to_device
+        copy_fn = current_platform.insert_blocks_to_device # CUDA, ROCm, XPU各自有自己的 h2d, d2h 实现
     else:
         copy_fn = current_platform.swap_out_blocks_to_host
-    for layer_name in src_kv_caches:
+    for layer_name in src_kv_caches: # 逐层进行拷贝
         src_tensor = src_kv_caches[layer_name]
         dst_tensor = dst_kv_caches[layer_name]
         copy_fn(src_tensor, dst_tensor, src_indices, dst_indices)

@@ -90,6 +90,7 @@ class CachedRequestState:
 
 
 class InputBatch:
+    """跨step复用, 基于"相邻 step 的请求高度重叠"这一假设做增量更新"""
     def __init__(
         self,
         max_num_reqs: int,

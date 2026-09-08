@@ -280,8 +280,8 @@ def _compute_slot_mappings_kernel(
         offset = i + tl.arange(0, TRITON_BLOCK_SIZE)
         positions = tl.load(pos + offset, mask=offset < end_idx, other=0)
 
-        block_indices = positions // (block_size * CP_SIZE)
-        block_offsets = positions % (block_size * CP_SIZE)
+        block_indices = positions // (block_size * CP_SIZE) # 第几块
+        block_offsets = positions % (block_size * CP_SIZE) # 块内偏移
         block_numbers = tl.load(
             block_table_ptr + req_state_idx * block_table_stride + block_indices
         )
