@@ -55,6 +55,11 @@ class AllBlocksCleared(KVCacheEvent):
 
 
 class KVEventBatch(EventBatch):
+    """给外部系统同步/消费 KV cache 状态变化用的:
+    - 分布式 / 外部 KV cache 消费者: 例如 LMCache、FlexKV、offloading、mooncake 这类 connector
+    - GPU / CPU / 外部存储之间的 KV 数据同步
+    - 缓存状态可观测性和重建
+    """
     events: list[BlockStored | BlockRemoved | AllBlocksCleared]
 
 

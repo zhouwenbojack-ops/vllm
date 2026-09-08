@@ -119,12 +119,12 @@ class KVCacheBlock:
     """KV-cache block metadata."""
 
     # Block ID, ranging from 0 to num_gpu_blocks - 1.
-    block_id: int
+    block_id: int # 全局block pool中的物理块idx
     # Reference count.
     ref_cnt: int = 0
     # The hash key (block hash + group id) of the block, only available
     # when the block is full and cached.
-    _block_hash: BlockHashWithGroupId | None = None
+    _block_hash: BlockHashWithGroupId | None = None # 只有full & cached block才有hash
     # Number of prefix tokens covered by _block_hash. For full blocks this is
     # the full block boundary; partial aliases can end inside a cache block.
     _block_hash_num_tokens: int | None = None

@@ -29,6 +29,7 @@ else:
 
 @dataclass
 class NewRequestData:
+    """推理请求首次进入的完整信息"""
     req_id: str
     prompt_token_ids: list[int] | None
     mm_features: list[MultiModalFeatureSpec]
@@ -110,6 +111,7 @@ class NewRequestData:
 
 @dataclass
 class CachedRequestData:
+    """缓存请求的增量信息"""
     req_ids: list[str]
     # For request ids not in resumed_req_ids, new_block_ids will be appended to
     # the request's block IDs. For those in the set, new_block_ids will be used as the
@@ -179,6 +181,7 @@ class CachedRequestData:
 
 @dataclass
 class SchedulerOutput:
+    """本次step的计划"""
     # list of the requests that are scheduled for the first time.
     # We cache the request's data in each worker process, so that we don't
     # need to re-send it every scheduling step.

@@ -209,7 +209,8 @@ class KVConnectorBase_V1(ABC):
     # ==============================
 
     def bind_connector_metadata(self, connector_metadata: KVConnectorMetadata) -> None:
-        """Set the connector metadata from the scheduler.
+        """把scheduler为本次step算好的kv 传输计划存下来, forward结束清空\n
+        Set the connector metadata from the scheduler.
 
         This function should be called by the model runner every time
         before the model execution. The metadata will be used for runtime
@@ -276,7 +277,10 @@ class KVConnectorBase_V1(ABC):
         return
 
     def set_host_xfer_buffer_ops(self, copy_operation: CopyBlocksOp):
-        """
+        """给异步保存类connector一个安全窗口:
+        - 如果某些 block 正在被异步写往外部存储,而这一步这些 block 又要被抢占/驱逐并复用,那必须在覆盖发生之前把这些 in-flight 的保存落定,否则会写出脏数据
+        - 它排在 bind 之前调用——要赶在新数据绑定、加载启动、block 被复用之前先处理旧账
+
         Set the xPU-specific ops for copying KV between host and device.
         Needed when host buffer is used for kv transfer (e.g., in NixlConnector)
         """
@@ -291,7 +295,7 @@ class KVConnectorBase_V1(ABC):
 
     @abstractmethod
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs: Any) -> None:
-        """
+        """根据绑定的 metadata 异步拉取远端/CPU 的 KV\n
         Start loading the KV cache from the connector to vLLM's paged
         KV buffer. This is called from the forward context before the
         forward pass to enable async loading during model execution.

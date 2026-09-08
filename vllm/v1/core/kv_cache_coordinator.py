@@ -59,7 +59,7 @@ def _validate_prefix_cache_retention_interval(
 
 
 class KVCacheCoordinator(ABC):
-    """
+    """维护一个中心block pool, 遍历所有manager做请求转发\n
     Coordinate the KV cache of different KV cache groups.
     """
 
@@ -383,8 +383,8 @@ class KVCacheCoordinatorNoPrefixCache(KVCacheCoordinator):
         enable_kv_cache_events: bool,
         dcp_world_size: int,
         pcp_world_size: int,
-        scheduler_block_size: int,
-        hash_block_size: int,
+        scheduler_block_size: int, # 调度层对齐各group的公共粒度, 即最小公倍数
+        hash_block_size: int, # prefix cache计算hash的粒度
         metrics_collector: KVCacheMetricsCollector | None = None,
     ):
         super().__init__(

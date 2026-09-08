@@ -38,6 +38,7 @@ class KVConnector:
         return None
 
     def no_forward(self, scheduler_output: "SchedulerOutput") -> ModelRunnerOutput:
+        """当本step不需要真正跑模型, 只需要处理KV传输时调用"""
         return EMPTY_MODEL_RUNNER_OUTPUT
 
     def set_disabled(self, disabled: bool) -> None:
@@ -45,6 +46,7 @@ class KVConnector:
 
 
 class ActiveKVConnector(KVConnector):
+    """转发到底层 KV 传输组，处理加载/保存/元数据"""
     def __init__(
         self, vllm_config: VllmConfig, kv_caches_dict: dict[str, torch.Tensor]
     ):
@@ -74,14 +76,14 @@ class ActiveKVConnector(KVConnector):
             with set_forward_context(None, self.vllm_config):
                 self.kv_connector.start_load_kv(get_forward_context())
 
-    def post_forward(
+    def post_forward( # forward收尾, 构造KVConnectorOutput并填充各种状态
         self, finished_req_ids: set[str], wait_for_save: bool = True
     ) -> KVConnectorOutput | None:
         if self._disabled:
             return None
 
         output = KVConnectorOutput()
-        if wait_for_save:
+        if wait_for_save: # 等待kv保存完成
             self.kv_connector.wait_for_save()
         output.finished_sending, output.finished_recving = (
             self.kv_connector.get_finished(finished_req_ids)
@@ -102,7 +104,7 @@ class ActiveKVConnector(KVConnector):
         self.pre_forward(scheduler_output)
         finished_req_ids = scheduler_output.finished_req_ids
         kv_connector_output = self.post_forward(finished_req_ids, wait_for_save=False)
-        return ModelRunnerOutput.with_kv_conn_output_only(kv_connector_output)
+        return ModelRunnerOutput.with_kv_conn_output_only(kv_connector_output) # 打包成一个只带 KV 输出的 ModelRunnerOutput
 
     def set_disabled(self, disabled: bool) -> None:
         # Ensure that layer-wise connector hooks aren't called when disabled.

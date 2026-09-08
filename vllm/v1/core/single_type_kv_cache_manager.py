@@ -208,7 +208,7 @@ class SingleTypeKVCacheManager(ABC):
             num_local_computed_tokens + num_external_computed_tokens
         )
         num_skipped_tokens = self.get_num_skipped_tokens(num_total_computed_tokens)
-        num_skipped_blocks = num_skipped_tokens // self.block_size
+        num_skipped_blocks = num_skipped_tokens // self.block_size # 丢弃某些cache, 如滑动窗口
         if num_skipped_blocks > 0:
             # It is possible that all new computed blocks are skipped when
             # num_skipped_blocks > len(new_computed_blocks).
@@ -278,7 +278,10 @@ class SingleTypeKVCacheManager(ABC):
     def allocate_new_blocks(
         self, request_id: str, num_tokens: int, num_tokens_main_model: int
     ) -> list[KVCacheBlock]:
-        """
+        """对于block的第一次分配, 可能因为没填满而导致内碎片:
+        - 对于同请求后续token, 会继续填充内碎片
+        - 对于不同请求, 只有full block才会被prefix cache共享
+
         Allocate new blocks for the request to give it at least `num_tokens`
         token slots.
 
@@ -293,8 +296,8 @@ class SingleTypeKVCacheManager(ABC):
             The new allocated blocks.
         """
         req_blocks = self.req_to_blocks[request_id]
-        num_required_blocks = cdiv(num_tokens, self.block_size)
-        num_new_blocks = num_required_blocks - len(req_blocks)
+        num_required_blocks = cdiv(num_tokens, self.block_size) # 向上取整, 计算共需要多少个blocks
+        num_new_blocks = num_required_blocks - len(req_blocks) # 如果没有超过已经分配的block数, 则append最后一个block
         if num_new_blocks <= 0:
             return []
         else:
